@@ -1,0 +1,132 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>拙政园智能导览</title>
+<style>
+  :root { --bg:#f6f4ee; --card:#fff; --ink:#26302b; --muted:#6b756f; --accent:#2f6b4f; --line:#e3dfd3; --user:#e4efe8; }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg:#161a18; --card:#1f2522; --ink:#e6ebe8; --muted:#97a39c; --accent:#6fbf98; --line:#2d3531; --user:#27382f; }
+  }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--ink); font:15px/1.6 -apple-system,"PingFang SC","Microsoft YaHei",sans-serif; }
+  .wrap { max-width:760px; margin:0 auto; padding:16px; min-height:100vh; display:flex; flex-direction:column; }
+  h1 { font-size:20px; margin:8px 0 2px; }
+  .sub { color:var(--muted); font-size:13px; margin-bottom:12px; }
+  #chat { flex:1; display:flex; flex-direction:column; gap:12px; padding-bottom:12px; }
+  .msg { padding:10px 14px; border-radius:12px; background:var(--card); border:1px solid var(--line); white-space:pre-wrap; word-break:break-word; }
+  .msg.user { background:var(--user); align-self:flex-end; max-width:85%; }
+  .msg img { max-width:200px; border-radius:8px; display:block; margin-bottom:6px; }
+  .meta { color:var(--muted); font-size:12px; margin-top:6px; }
+  .cite { color:var(--accent); cursor:pointer; font-weight:600; }
+  details.src { margin-top:8px; font-size:13px; color:var(--muted); }
+  details.src div { margin:6px 0; padding:6px 8px; border-left:3px solid var(--line); }
+  details.src div.hl { border-color:var(--accent); background:var(--bg); }
+  .chips { display:flex; flex-wrap:wrap; gap:8px; margin-bottom:12px; }
+  .chip { border:1px solid var(--line); background:var(--card); color:var(--ink); border-radius:16px; padding:5px 12px; cursor:pointer; font-size:13px; }
+  form { position:sticky; bottom:0; background:var(--bg); padding:8px 0 4px; display:flex; gap:8px; align-items:flex-end; }
+  textarea { flex:1; resize:none; padding:10px; border-radius:10px; border:1px solid var(--line); background:var(--card); color:var(--ink); font:inherit; max-height:120px; }
+  button { border:0; border-radius:10px; padding:10px 16px; background:var(--accent); color:#fff; font:inherit; cursor:pointer; }
+  button.ghost { background:var(--card); color:var(--ink); border:1px solid var(--line); padding:10px 12px; }
+  button:disabled { opacity:.5; cursor:default; }
+  #preview { display:none; align-items:center; gap:8px; margin-bottom:6px; font-size:13px; color:var(--muted); }
+  #preview img { height:48px; border-radius:6px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>拙政园智能导览</h1>
+  <div class="sub">基于 RAG 的游客问答：景点介绍、门票开放、游览路线；也可以上传照片识别景点。回答均标注资料来源。</div>
+  <div class="chips" id="chips"></div>
+  <div id="chat"></div>
+  <div id="preview"><img id="pimg"><span>已选择图片</span><button type="button" class="ghost" id="pclear">移除</button></div>
+  <form id="form">
+    <button type="button" class="ghost" id="pick" title="上传照片识别景点">📷</button>
+    <input type="file" id="file" accept="image/*" hidden>
+    <textarea id="q" rows="1" placeholder="问问拙政园，比如：小飞虹是什么？"></textarea>
+    <button id="send">发送</button>
+  </form>
+</div>
+<script>
+const $ = s => document.querySelector(s);
+const chat = $('#chat'), q = $('#q'), send = $('#send');
+const history = [];
+let image = null;
+const SUGGEST = ['拙政园门票多少钱？几点开门？','第一次去怎么逛，需要多久？','小飞虹有什么特别？','为什么叫拙政园？','什么时候去最好看？','与谁同坐轩名字怎么来的？'];
+SUGGEST.forEach(t => { const b = document.createElement('button'); b.type='button'; b.className='chip'; b.textContent=t; b.onclick=()=>{ q.value=t; form.requestSubmit(); }; $('#chips').append(b); });
+
+function addMsg(cls, text) { const d = document.createElement('div'); d.className = 'msg ' + cls; d.textContent = text || ''; chat.append(d); d.scrollIntoView({block:'end'}); return d; }
+function esc(s){ return s.replace(/[&<>]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;'}[c])); }
+
+function shrink(file) { // 前端压缩到长边 1024，控制请求体大小
+  return new Promise((res, rej) => {
+    const img = new Image(), url = URL.createObjectURL(file);
+    img.onload = () => {
+      const r = Math.min(1, 1024 / Math.max(img.width, img.height));
+      const c = document.createElement('canvas'); c.width = img.width * r; c.height = img.height * r;
+      c.getContext('2d').drawImage(img, 0, 0, c.width, c.height); URL.revokeObjectURL(url);
+      res(c.toDataURL('image/jpeg', 0.82));
+    };
+    img.onerror = rej; img.src = url;
+  });
+}
+$('#pick').onclick = () => $('#file').click();
+$('#file').onchange = async e => { const f = e.target.files[0]; if (!f) return; image = await shrink(f); $('#pimg').src = image; $('#preview').style.display = 'flex'; };
+$('#pclear').onclick = () => { image = null; $('#file').value = ''; $('#preview').style.display = 'none'; };
+q.addEventListener('keydown', e => { if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) { e.preventDefault(); form.requestSubmit(); } });
+
+function renderAnswer(box, text, sources) {
+  box.innerHTML = esc(text).replace(/\[(\d+)\]/g, '<span class="cite" data-n="$1">[$1]</span>');
+  box.querySelectorAll('.cite').forEach(el => el.onclick = () => {
+    const d = box.parentElement.querySelector('details.src'); if (!d) return; d.open = true;
+    d.querySelectorAll('div').forEach(x => x.classList.toggle('hl', x.dataset.n === el.dataset.n));
+  });
+}
+
+const form = $('#form');
+form.onsubmit = async e => {
+  e.preventDefault();
+  const question = q.value.trim(); if (!question && !image) return;
+  const um = addMsg('user', question); if (image) { const im = new Image(); im.src = image; um.prepend(im); }
+  const payload = { question, history: history.slice(-6), image };
+  q.value = ''; image = null; $('#preview').style.display = 'none'; $('#file').value = ''; send.disabled = true;
+
+  const holder = document.createElement('div'); holder.className = 'msg';
+  const body = document.createElement('div'); body.textContent = '思考中…';
+  const meta = document.createElement('div'); meta.className = 'meta';
+  const src = document.createElement('details'); src.className = 'src'; src.style.display = 'none';
+  holder.append(body, meta, src); chat.append(holder); holder.scrollIntoView({block:'end'});
+  let text = '', sources = [];
+  try {
+    const resp = await fetch('/api/chat', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(payload) });
+    if (!resp.ok) throw new Error((await resp.json().catch(()=>({}))).detail || ('HTTP ' + resp.status));
+    const reader = resp.body.getReader(), dec = new TextDecoder(); let buf = '';
+    while (true) {
+      const { value, done } = await reader.read(); if (done) break;
+      buf += dec.decode(value, {stream:true});
+      let i; while ((i = buf.indexOf('\n\n')) >= 0) {
+        const line = buf.slice(0, i); buf = buf.slice(i + 2);
+        if (!line.startsWith('data:')) continue;
+        const ev = JSON.parse(line.slice(5));
+        if (ev.type === 'vision') meta.textContent = ev.spot ? `📷 识别为：${ev.spot}（置信度 ${ev.confidence}）· ${ev.description}` : '📷 未能确定景点';
+        else if (ev.type === 'rewrite') meta.textContent += (meta.textContent ? '\n' : '') + '检索问句：' + ev.text;
+        else if (ev.type === 'sources') {
+          sources = ev.items;
+          if (sources.length) {
+            src.style.display = ''; src.innerHTML = `<summary>参考资料（${sources.length}，${ev.mode === 'hybrid' ? '混合检索' : 'BM25'}）</summary>` +
+              sources.map(s => `<div data-n="${s.n}">[${s.n}] ${esc(s.path)}${s.volatile ? '（时效信息，更新于 ' + esc(s.updated) + '）' : ''}<br>${esc(s.text)}</div>`).join('');
+          }
+        }
+        else if (ev.type === 'token') { text += ev.text; renderAnswer(body, text, sources); holder.scrollIntoView({block:'end'}); }
+        else if (ev.type === 'error') { body.textContent = (text ? text + '\n' : '') + ev.text; }
+      }
+    }
+    if (!text && body.textContent === '思考中…') body.textContent = '（没有生成内容，请重试）';
+    history.push({role:'user', content: question || '（图片）'}, {role:'assistant', content: text});
+  } catch (err) { body.textContent = '出错了：' + err.message; }
+  send.disabled = false; q.focus();
+};
+</script>
+</body>
+</html>

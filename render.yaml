@@ -1,0 +1,13 @@
+services:
+  - type: web
+    name: zhuozhengyuan-guide
+    runtime: docker
+    plan: free
+    healthCheckPath: /api/health
+    envVars:
+      - key: LLM_API_KEY
+        sync: false
+      - key: EMBED_API_KEY
+        sync: false
+      - key: LLM_MODEL
+        value: deepseek-flash
